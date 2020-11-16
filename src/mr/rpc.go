@@ -23,6 +23,24 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type VRequest struct{
+    /*
+        0: free worker, 1: Map worker finished, 2: Reduce, 
+        -999: something error,
+    */
+    JobStatus   int            //  o
+    TaskNum     int
+    Pid         int
+}
+
+type VResponse struct{
+    JobType     int             //identify the type of the job 1: map, 2: reduce, 3: nothing, -1000: exit
+    InputFile   string          //send to map tasks
+    TaskNum     int
+    NMap        int             //total number of map tasks
+    NReduce     int             //total number of reduce tasks
+    TimeLimitSec    int             //time limitation in second
+}
 
 
 // Cook up a unique-ish UNIX-domain socket name
