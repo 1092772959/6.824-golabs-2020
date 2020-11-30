@@ -267,6 +267,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			}
 		}
 		rf.logLock.Unlock()
+		//log.Printf("FL(%v) preIdx %v, preTerm %v args.PreIdx %v args.PreTerm %v, Vote %v", rf.me, lastIdx, rf.log[lastIdx].Term, args.LastLogIndex, args.LastLogTerm, reply.VoteGranted)
 	} else {
 		reply.VoteGranted = false
 	}
@@ -286,17 +287,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//Suppose rf could not be a leader; otherwise there are two leaders at the same time.
 
 	//log.Printf("Received HB, term %v\n", rf.currentTerm)
-	rf.mu.Lock()
 	xterm := rf.currentTerm
 	if xterm > args.Term {
 		reply.Term = xterm
 		reply.Success = false
 		log.Printf("AAAAAAA FL(%v) Term %v args.Term %v", rf.me, rf.currentTerm, args.Term)
-		rf.mu.Unlock()
 		rf.convertToCandidate()
 		return
 	} else {
-		rf.mu.Unlock()
 		rf.convertToFollower(args.Term)
 	}
 
@@ -307,7 +305,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if rf.status == StatusCandidate {
-		if rf.getTermSync() > args.Term { //continue the election
+		if rf.currentTerm > args.Term { //continue the election
 			reply.Term = rf.currentTerm
 			reply.Success = false
 			return
@@ -339,8 +337,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		if rf.log[args.PreLogIndex].Term != args.PreLogTerm {
-			log.Printf("FL %v Term %v, Term issue		preLogTerm : %v, args.preTerm: %v", rf.me, rf.currentTerm,
-				rf.log[args.PreLogIndex].Term, args.PreLogTerm)
+			//log.Printf("FL %v Term %v, Term issue		preLogTerm : %v, args.preTerm: %v", rf.me, rf.currentTerm,
+			//	rf.log[args.PreLogIndex].Term, args.PreLogTerm)
+			rf.log = rf.log[:args.PreLogIndex]
+			rf.printLogs()
 			reply.Success = false
 			rf.logLock.Unlock()
 			return
@@ -364,6 +364,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			//log.Printf("FL %v Term %v success, args: %v, log size after: %v", rf.me, rf.currentTerm, args.PreLogIndex,
 			//	len(rf.log))
 			reply.Success = true
+			rf.printLogs()
 		}
 		rf.logLock.Lock()
 		// #5 in Receiver impl
@@ -380,6 +381,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		//log.Printf("FL %v commitIdx %v lastApply %v args.commitIdx %v args.logs %v", rf.me, rf.commitIndex, rf.lastApplied, args.LeaderCommit, len(args.Entries))
 		for rf.commitIndex > rf.lastApplied {
 			rf.lastApplied++
+			//log.Printf("FL(%v) apply log(%v)", rf.me, rf.lastApplied)
 			//log.Printf("Server %v apply %v", rf.me, rf.lastApplied)
 			rf.applyCh <- ApplyMsg{
 				Command:      rf.log[rf.lastApplied].Command,
@@ -441,7 +443,6 @@ func (rf *Raft) convertToLeader() {
 	}
 	rf.logLock.Unlock()
 	rf.sendHeartBeat()
-	log.Printf("End of convertion to leader")
 }
 
 //
@@ -523,6 +524,7 @@ func (rf *Raft) sendAppendEntriesWrapper(server int, args *AppendEntriesArgs, re
 	return ok
 }
 
+/*
 func (rf *Raft) issueAppendEntriesReq(server int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	//lastIndex := len(rf.log) - 1
@@ -584,7 +586,7 @@ func (rf *Raft) issueAppendEntriesReq(server int, wg *sync.WaitGroup) {
 	}
 	rf.mu.Unlock()
 }
-
+*/
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -618,24 +620,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Command: command})
 	index = len(rf.log) - 1
 	rf.logLock.Unlock()
-	/*
-		wg := &sync.WaitGroup{}
-		log.Println("Start of append entries............")
-
-		// luanch parallel RPC
-		for idx := range rf.peers {
-			if idx == rf.me {
-				continue
-			}
-			wg.Add(1)
-			go rf.issueAppendEntriesReq(idx, wg)
-		}
-		log.Printf("Leader: ")
-		rf.printLogs()
-		wg.Wait()
-	*/
-	//log.Println("End of append entries..............")
-	//go rf.sendHeartBeat()
+	rf.printLogs()
 	term = rf.currentTerm
 	return index, term, isLeader
 }
@@ -679,7 +664,7 @@ func (rf *Raft) checkHeartBeats(ctx context.Context) {
 			case <-time.After(rf.timeout):
 				sts = rf.getStatusSync()
 				if sts == StatusFollower && rf.votedFor == VoteForNone && !rf.killed() {
-					//log.Printf("Server %v Term %v HB timeout", rf.me, rf.currentTerm)
+					log.Printf("Server %v Term %v HB timeout", rf.me, rf.currentTerm)
 					rf.convertToCandidate()
 				} else {
 				}
@@ -788,7 +773,7 @@ func (rf *Raft) canOperation(ctx context.Context, cterm int) {
 			rf.currentTerm++
 			rf.electionTimeout = rf.randomElectionTimeout()
 			rf.mu.Unlock()
-			time.Sleep(time.Duration(rf.electionTimeout) * time.Millisecond)
+			time.Sleep(time.Duration(rf.electionTimeout/2) * time.Millisecond)
 			return
 		}
 		return
@@ -812,25 +797,28 @@ func (rf *Raft) randomElectionTimeout() time.Duration {
 		TimeoutMilliSecElectionMin) * time.Millisecond
 }
 
-func (rf *Raft) consistencyCheckFor(server, endIdx int, tag *bool, wg *sync.WaitGroup) {
-	*tag = false
+func (rf *Raft) consistencyCheckFor(server, cterm int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	rf.logLock.Lock()
-	preLogIdx := rf.nextIndex[server] - 1
-	nextIdx := len(rf.log)
+	ni := rf.nextIndex[server]
+	preLogIdx := ni - 1
+	preLogTerm := -1
 	var entries []*LogEntry
-	if endIdx < rf.nextIndex[server] || rf.commitIndex >= rf.nextIndex[server] {
+	if ni >= len(rf.log) {
 		entries = nil
 	} else {
-		entries = rf.log[rf.nextIndex[server] : endIdx+1]
+		entries = rf.log[ni:]
+		//log.Printf("For FL(%v) ni %v len %v", server, ni, len(entries))
 	}
-	//log.Printf("For FL(%v) start %v end %v", server, rf.nextIndex[server], endIdx)
+	if preLogIdx < len(rf.log) {
+		preLogTerm = rf.log[preLogIdx].Term
+	}
 
 	args := &AppendEntriesArgs{
-		Term:         rf.currentTerm,
+		Term:         cterm,
 		LeaderID:     rf.me,
 		PreLogIndex:  preLogIdx,
-		PreLogTerm:   rf.log[preLogIdx].Term,
+		PreLogTerm:   preLogTerm,
 		Entries:      entries,
 		LeaderCommit: rf.commitIndex,
 	}
@@ -840,121 +828,106 @@ func (rf *Raft) consistencyCheckFor(server, endIdx int, tag *bool, wg *sync.Wait
 	toChan := make(chan bool, 1)
 	rf.sendAppendEntries(server, args, reply, toChan)
 	<-toChan
-	if reply.Term > rf.currentTerm {
+	if reply.Term > cterm {
 		rf.convertToFollower(reply.Term)
+		return
+	}
+	if rf.status != StatusLeader || cterm != reply.Term {
 		return
 	}
 	if reply.Success {
 		rf.logLock.Lock()
 		if preLogIdx+1 == rf.nextIndex[server] {
-			rf.nextIndex[server] = nextIdx
-			rf.matchIndex[server] = nextIdx - 1
-		}
-		rf.logLock.Unlock()
-		*tag = true
-		return
-	}
-	args.PreLogIndex--
-	for ; args.PreLogIndex > 0; args.PreLogIndex-- { // sync with this follower, resend immediately
-		//log.Printf("To FL %v Sync failed", server)
-		if rf.status != StatusLeader {
-			return
-		}
-		rf.logLock.Lock()
-		args.PreLogTerm = rf.log[args.PreLogIndex].Term
-		args.LeaderCommit = rf.commitIndex
-		if rf.commitIndex >= args.PreLogIndex+1 {
-			args.Entries = nil
-		} else {
-			args.Entries = rf.log[args.PreLogIndex+1 : endIdx+1]
+			rf.nextIndex[server] = ni + len(entries)
+			rf.matchIndex[server] = rf.nextIndex[server] - 1
 		}
 
-		//log.Printf("For FL(%v) start %v end %v", server, rf.nextIndex[server], endIdx)
-		rf.logLock.Unlock()
-		rf.sendAppendEntries(server, args, reply, toChan)
-		<-toChan
-		if reply.Term > rf.currentTerm && rf.status == StatusLeader {
-			rf.convertToFollower(reply.Term)
-			return
-		}
-		if reply.Success {
-			rf.logLock.Lock()
-			if preLogIdx+1 == rf.nextIndex[server] {
-				rf.nextIndex[server] = nextIdx
-				rf.matchIndex[server] = nextIdx - 1
+		oriCommitIndex := rf.commitIndex
+		for i := rf.commitIndex + 1; i < len(rf.log); i++ {
+			if rf.log[i].Term == rf.currentTerm {
+				matchCnt := 1
+				for idx := range rf.peers {
+					if idx == rf.me {
+						continue
+					}
+					if rf.matchIndex[idx] >= i {
+						matchCnt++
+					}
+				}
+				if matchCnt > len(rf.peers)/2 {
+					rf.commitIndex = i
+				}
 			}
-			rf.logLock.Unlock()
-			*tag = true
-			return
 		}
+		if rf.commitIndex != oriCommitIndex {
+			log.Printf("Leader update commit(%v) to %v", oriCommitIndex, rf.commitIndex)
+			for rf.commitIndex > rf.lastApplied {
+				rf.lastApplied++
+				//log.Printf("Server %v apply %v", rf.me, rf.lastApplied)
+				rf.applyCh <- ApplyMsg{
+					Command:      rf.log[rf.lastApplied].Command,
+					CommandValid: true,
+					CommandIndex: rf.lastApplied,
+				}
+			}
+		}
+		rf.logLock.Unlock()
+		//*tag = true
+	} else {
+		rf.logLock.Lock()
+		if ni > 1 {
+			rf.nextIndex[server] = ni - 1
+		}
+		//log.Printf("FL(%v) nextIdx dec to %v", server, rf.nextIndex[server])
+		rf.logLock.Unlock()
 	}
-	rf.logLock.Lock()
-	if preLogIdx+1 == rf.nextIndex[server] {
-		rf.nextIndex[server] = 1
-		rf.matchIndex[server] = 0
-	}
-	rf.logLock.Unlock()
-}
-
-func (rf *Raft) lockMu() {
-	rf.mu.Lock()
-}
-
-func (rf *Raft) lockLog() {
-	rf.logLock.Lock()
-}
-
-func (rf *Raft) unlockMu() {
-	rf.mu.Unlock()
-}
-
-func (rf *Raft) unlockLog() {
-	rf.logLock.Unlock()
 }
 
 func (rf *Raft) sendHeartBeat() {
 	//log.Printf("Server %v Term %v start HB, log cnt: %v", rf.me, rf.currentTerm, len(rf.log))
 	var wg sync.WaitGroup
-	tags := make([]bool, len(rf.peers))
-	tags[rf.me] = true
-
-	rf.logLock.Lock()
-	oriCommitIndex := rf.commitIndex
-	newCommitIndex := len(rf.log) - 1
-	//log.Printf("Leader endIdx %v commitIdx %v", newCommitIndex, rf.commitIndex)
-	rf.logLock.Unlock()
+	/*
+		rf.logLock.Lock()
+		oriCommitIndex := rf.commitIndex
+		newCommitIndex := len(rf.log) - 1
+		//log.Printf("Leader endIdx %v commitIdx %v", newCommitIndex, rf.commitIndex)
+		rf.logLock.Unlock()
+	*/
+	cterm := rf.currentTerm
 	for idx := range rf.peers {
 		if idx == rf.me {
 			continue
 		}
 		wg.Add(1)
-		go rf.consistencyCheckFor(idx, newCommitIndex, &tags[idx], &wg)
+		go rf.consistencyCheckFor(idx, cterm, &wg)
 		//go rf.sendAppendEntries(idx, args, &replies[idx], &wg)
 	}
 	wg.Wait()
-	sucCnt := 0
-	for _, tag := range tags {
-		if tag {
-			sucCnt++
-		}
-	}
-	rf.logLock.Lock()
-	if sucCnt > len(rf.peers)/2 && oriCommitIndex == rf.commitIndex {
-		//log.Printf("Leader update commitIdx(%v) to %v", rf.commitIndex, newCommitIndex)
-		rf.commitIndex = newCommitIndex
-	}
-	if oriCommitIndex == newCommitIndex {
-		for rf.commitIndex > rf.lastApplied {
-			rf.lastApplied++
-			//log.Printf("Server %v apply %v", rf.me, rf.lastApplied)
-			rf.applyCh <- ApplyMsg{
-				Command:      rf.log[rf.lastApplied].Command,
-				CommandValid: true,
-				CommandIndex: rf.lastApplied,
+	/*
+		sucCnt := 0
+		for _, tag := range tags {
+			if tag {
+				sucCnt++
 			}
 		}
-	}
-	rf.logLock.Unlock()
+		rf.logLock.Lock()
+		if sucCnt > len(rf.peers)/2 && oriCommitIndex == rf.commitIndex {
+			//log.Printf("Leader update commitIdx(%v) to %v", rf.commitIndex, newCommitIndex)
+			rf.commitIndex = newCommitIndex
+		}
+		if oriCommitIndex == newCommitIndex {
+			for rf.commitIndex > rf.lastApplied {
+				rf.lastApplied++
+				//log.Printf("Server %v apply %v", rf.me, rf.lastApplied)
+				rf.applyCh <- ApplyMsg{
+					Command:      rf.log[rf.lastApplied].Command,
+					CommandValid: true,
+					CommandIndex: rf.lastApplied,
+				}
+			}
+		}
+		rf.logLock.Unlock()
+	*/
 }
 
 func (rf *Raft) applyNewLog() {
@@ -983,7 +956,7 @@ func (rf *Raft) startController(ctx context.Context) {
 	CanCtx, CanFunc := context.WithCancel(ctx)
 	go rf.checkHeartBeats(HBCtx)
 	go rf.applyNewLog()
-	for {
+	for !rf.killed() {
 		select {
 		case <-ctx.Done():
 			// let sub thread quit
@@ -1049,7 +1022,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	//rf.lastReceivedAt = time.Now()
 	rf.timeoutChan = make(chan int)
-	log.Printf("Server %v Start...\n", rf.me)
+	//log.Printf("Server %v Start...\n", rf.me)
 	go rf.startController(ctx)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -1065,9 +1038,9 @@ func (rf *Raft) printLogs() {
 		s := fmt.Sprintf("%v ", e.Command)
 		logstr += s
 	}
-	tag := "Follower"
-	if rf.status == StatusLeader {
-		tag = "Leader"
-	}
-	log.Printf("%v %v, log: %v", tag, rf.me, logstr)
+	// tag := "Follower"
+	// if rf.status == StatusLeader {
+	// 	tag = "Leader"
+	// }
+	// log.Printf("%v %v, lastApply(%v), commitIdx(%v), log: %v", tag, rf.me, rf.lastApplied, rf.commitIndex, logstr)
 }
